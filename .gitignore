@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environment / secrets
+.env
+.env.*
+
+# Node / Next.js (frontend/.gitignore covers the details)
+node_modules/
+.next/
+
+# OS / editors
+.DS_Store
+.vscode/
+.idea/
