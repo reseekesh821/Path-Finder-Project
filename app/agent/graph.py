@@ -1,13 +1,10 @@
-"""LangGraph wiring for the campus pathfinder agent.
+"""The LangGraph agent that answers routing questions.
 
-Control flow (a ReAct loop with an invalid-building exit):
-
-    START -> agent --(LLM requested a tool call)--> tools --(valid buildings)--> agent -> ...
-                   |                                      \\--(unknown building)--> reject_invalid_building -> END
-                   \\--(LLM replied with plain text)--> END
-
-The agent node decides; the tools node executes. The loop repeats until the
-LLM answers without requesting a tool, at which point the graph ends.
+Flow:
+    agent  -> tools                    when the LLM asks for a route
+    agent  -> END                      when the LLM gives its final answer
+    tools  -> agent                    when the buildings were valid
+    tools  -> reject_invalid_building  when a building does not exist (then END)
 """
 
 from langchain_core.messages import AIMessage, SystemMessage
@@ -18,22 +15,16 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from app.agent.state import AgentState
 from app.core.tools import CAMPUS_GRAPH, calculate_route, resolve_building
 
+# --- Model -------------------------------------------------------------------
+
 tools = [calculate_route]
 
-# Must be the exact local tag: Ollama resolves a bare "llama3.1" to
-# "llama3.1:latest", which is not pulled on this machine.
-#
-# temperature=0 makes tool-call arguments and answers repeatable, which matters
-# more than creative phrasing for a routing assistant.
+# Use the exact tag: a bare "llama3.1" means "llama3.1:latest", which is not installed.
+# temperature=0 keeps tool calls and answers consistent between runs.
 llm = ChatOllama(model="llama3.1:8b", temperature=0)
-# Sends the tool's JSON schema with every request, so the LLM can answer with
-# a structured tool call instead of guessing a route.
 llm_with_tools = llm.bind_tools(tools)
 
-# Guardrail: the tool's docstring lists the valid buildings, but on its own the
-# model will silently swap an unknown building for a valid one and return a
-# plausible but wrong route. This prompt forbids substitution outright, and
-# forbids answering from memory so every route and time comes from Dijkstra.
+# Keeps the model from inventing buildings or guessing routes from memory.
 SYSTEM_PROMPT = SystemMessage(
     content=(
         "You are a strict routing assistant. You must ONLY use the valid buildings. "
@@ -47,25 +38,36 @@ SYSTEM_PROMPT = SystemMessage(
 )
 
 
-def agent(state: AgentState) -> dict:
-    """Ask the LLM for the next step given the full conversation so far."""
-    # Prepended per call rather than stored in state, so it is always first and
-    # is not appended again by the `add` reducer on every loop iteration.
-    response = llm_with_tools.invoke([SYSTEM_PROMPT, *state["messages"]])
+# --- Nodes -------------------------------------------------------------------
 
-    # Returned as a list so the `add` reducer appends it to `messages`.
+def agent(state: AgentState) -> dict:
+    """Ask the LLM what to do next, given the conversation so far."""
+    # Added on every call instead of stored in state, so it is never duplicated.
+    response = llm_with_tools.invoke([SYSTEM_PROMPT, *state["messages"]])
     update: dict = {"messages": [response]}
 
-    # No tool calls means tools_condition will route to END, so this is the
-    # final answer; persist it so callers can read it without parsing messages.
+    # No tool call means this is the final answer.
     if not response.tool_calls:
         update["calculated_route"] = response.content
 
     return update
 
 
+def reject_invalid_building(state: AgentState) -> dict:
+    """Reply with a fixed message listing the valid buildings."""
+    names = _invalid_buildings(state)
+    invalid = " and ".join(f'"{name}"' for name in names)
+    verb = "is not a valid campus building" if len(names) == 1 else "are not valid campus buildings"
+    valid = ", ".join(sorted(CAMPUS_GRAPH.nodes))
+
+    text = f"Sorry, {invalid} {verb}. Valid buildings are: {valid}."
+    return {"messages": [AIMessage(content=text)], "calculated_route": text}
+
+
+# --- Routing -----------------------------------------------------------------
+
 def _invalid_buildings(state: AgentState) -> list[str]:
-    """Building names in the most recent tool call that are not on the campus graph."""
+    """Building names from the latest tool call that are not on the campus map."""
     last_call = next(m for m in reversed(state["messages"]) if isinstance(m, AIMessage) and m.tool_calls)
     names = [
         call["args"][key]
@@ -77,39 +79,23 @@ def _invalid_buildings(state: AgentState) -> list[str]:
 
 
 def route_after_tools(state: AgentState) -> str:
-    # Guardrail: once the tool has rejected a building, handing control back to
-    # the LLM lets it "helpfully" invent a route for some other building (it
-    # did, with fake street directions, despite the system prompt). Ending
-    # deterministically is the only way to guarantee no substitution.
+    # If a building was invalid, end here. Going back to the LLM lets it invent
+    # a route for a different building, even with the system prompt.
     return "reject_invalid_building" if _invalid_buildings(state) else "agent"
 
 
-def reject_invalid_building(state: AgentState) -> dict:
-    names = _invalid_buildings(state)
-    invalid = " and ".join(f'"{name}"' for name in names)
-    verb = "is not a valid campus building" if len(names) == 1 else "are not valid campus buildings"
-    valid = ", ".join(sorted(CAMPUS_GRAPH.nodes))
-    text = f"Sorry, {invalid} {verb}. Valid buildings are: {valid}."
-    return {"messages": [AIMessage(content=text)], "calculated_route": text}
-
+# --- Graph -------------------------------------------------------------------
 
 workflow = StateGraph(AgentState)
 
 workflow.add_node("agent", agent)
-# Runs every tool call on the latest AIMessage and appends the results as
-# ToolMessages. ValueErrors (unknown building, no route) are returned to the
-# LLM as tool output so it can correct itself instead of crashing the graph.
+# Tool errors (like an unknown building) go back as messages instead of crashing.
 workflow.add_node("tools", ToolNode(tools, handle_tool_errors=ValueError))
 workflow.add_node("reject_invalid_building", reject_invalid_building)
 
 workflow.set_entry_point("agent")
-
-# tools_condition inspects the last message: if it contains tool calls it
-# returns "tools", otherwise END. The node must be named "tools" for this.
+# tools_condition sends tool calls to the node named "tools", everything else to END.
 workflow.add_conditional_edges("agent", tools_condition)
-
-# After a successful tool run, return to the agent so it can read the result
-# and write the final answer. Unknown buildings exit via the rejection node.
 workflow.add_conditional_edges("tools", route_after_tools, ["agent", "reject_invalid_building"])
 workflow.add_edge("reject_invalid_building", END)
 

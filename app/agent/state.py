@@ -1,3 +1,5 @@
+"""State shared by every node in the agent graph."""
+
 from operator import add
 from typing import Annotated, TypedDict
 
@@ -5,13 +7,10 @@ from langchain_core.messages import AnyMessage
 
 
 class AgentState(TypedDict):
-    """Shared state 'clipboard' for the graph.
+    """The graph's 'clipboard': each node reads it and returns updates to it."""
 
-    Every node reads from this state and returns partial updates to it;
-    LangGraph merges those updates before passing the state to the next node.
-    """
-
-    # `add` reducer: updates are concatenated onto the existing list instead of replacing it.
+    # New messages are appended to the list (via `add`), never replacing it.
     messages: Annotated[list[AnyMessage], add]
-    # The agent's final text answer (written when it stops calling tools); overwritten on each update.
+
+    # The agent's final answer, saved when it stops calling tools.
     calculated_route: str

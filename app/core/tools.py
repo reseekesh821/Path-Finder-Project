@@ -1,4 +1,4 @@
-"""Deterministic campus routing utilities built on networkx."""
+"""Campus map and the shortest-route tool used by the agent."""
 
 from typing import TypedDict
 
@@ -10,9 +10,9 @@ class RouteResult(TypedDict):
     total_time: int
 
 
-# (building_a, building_b, walking time in minutes). Paths are walkable in both
-# directions, so the graph is undirected. Weights must be non-negative for
-# Dijkstra's algorithm to be correct.
+# --- Campus map --------------------------------------------------------------
+
+# (building, building, walking minutes). Paths work both ways.
 CAMPUS_EDGES: list[tuple[str, str, int]] = [
     ("Library", "Science Hall", 4),
     ("Library", "Student Union", 3),
@@ -29,7 +29,7 @@ CAMPUS_EDGES: list[tuple[str, str, int]] = [
 def _build_campus_graph() -> nx.Graph:
     graph = nx.Graph()
     graph.add_weighted_edges_from(CAMPUS_EDGES, weight="weight")
-    # Frozen so callers cannot mutate the shared module-level graph.
+    # Frozen so no caller can change the shared graph.
     return nx.freeze(graph)
 
 
@@ -39,36 +39,30 @@ _CANONICAL_NAMES: dict[str, str] = {name.lower(): name for name in CAMPUS_GRAPH.
 
 
 def resolve_building(name: str) -> str | None:
-    """Map LLM/user spellings like 'the library' onto the canonical node name."""
-    key = name.strip().lower()
-    key = key.removeprefix("the ")
+    """Return the official building name for spellings like 'the library', or None."""
+    key = name.strip().lower().removeprefix("the ")
     return _CANONICAL_NAMES.get(key)
 
 
-# The docstring below is sent to the LLM as the tool description, so
-# implementation notes live in this comment instead.
+# --- Tool --------------------------------------------------------------------
+
+# The docstring below is what the LLM sees, so technical notes live here instead.
 #
-# Time complexity: O((V + E) log V), where V is the number of buildings and E
-# the number of paths. networkx implements Dijkstra with a binary heap: each
-# vertex is popped once (O(V log V)) and each edge may push a new heap entry
-# (O(E log V)). Space is O(V) for the distance/predecessor maps.
-#
-# Determinism: the graph is static and edge insertion order is fixed, so ties
-# between equal-cost paths are broken the same way on every call.
+# Time complexity: O((V + E) log V) for V buildings and E paths, because
+# networkx runs Dijkstra with a binary heap. Space: O(V).
+# Deterministic: the graph never changes, so ties always break the same way.
 def calculate_route(start_node: str, end_node: str) -> RouteResult:
     """Calculates the shortest route between two buildings. Valid buildings are: Library, Science Hall, Student Union, Engineering, Admin Building, Dormitory. Do not use any other buildings."""
     start, end = resolve_building(start_node), resolve_building(end_node)
+
     missing = [raw for raw, resolved in ((start_node, start), (end_node, end)) if resolved is None]
     if missing:
         known = ", ".join(sorted(CAMPUS_GRAPH.nodes))
         raise ValueError(f"Unknown building(s): {', '.join(missing)}. Known buildings: {known}.")
 
     try:
-        # Single pass computes both distance and path, avoiding running
-        # Dijkstra twice (once for the path, once for the length).
-        total_time, path = nx.single_source_dijkstra(
-            CAMPUS_GRAPH, source=start, target=end, weight="weight"
-        )
+        # One call returns both the total time and the path.
+        total_time, path = nx.single_source_dijkstra(CAMPUS_GRAPH, source=start, target=end, weight="weight")
     except nx.NetworkXNoPath as exc:
         raise ValueError(f"No route exists from {start} to {end}.") from exc
 
