@@ -8,15 +8,19 @@ env/
 .mypy_cache/
 .ruff_cache/
 
-# Environment / secrets
+# Environment and secrets
 .env
 .env.*
 
-# Node / Next.js (frontend/.gitignore covers the details)
+# Node and Next.js
 node_modules/
 .next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+npm-debug.log*
 
-# OS / editors
+# OS and editor files
 .DS_Store
 .vscode/
 .idea/

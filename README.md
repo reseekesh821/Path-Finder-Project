@@ -2,6 +2,8 @@
 
 A campus routing assistant. Ask a question in plain English ("Fastest way from the Library to the Dormitory?") and a local LLM agent calls a deterministic Dijkstra tool to find the shortest walking route and total time.
 
+If you don't know the campus, open the campus map and tap two buildings. The app sends the route question for you.
+
 The LLM only interprets the question and phrases the answer. Every route and travel time comes from the graph algorithm, never from the model.
 
 ## Tech stack
@@ -17,7 +19,7 @@ The LLM only interprets the question and phrases the answer. Every route and tra
 
 ```mermaid
 graph LR
-    UI[Next.js dashboard] -->|POST /api/v1/route| API[FastAPI]
+    UI[Next.js chat] -->|POST /api/v1/route| API[FastAPI]
     API --> Agent[LangGraph agent]
     Agent -->|tool call| Tool[calculate_route<br/>Dijkstra]
     Tool -->|valid buildings| Agent
@@ -59,7 +61,10 @@ Building names are case-insensitive, and a leading "the" is ignored ("the librar
 │   ├── agent/state.py     # AgentState shared by all graph nodes
 │   ├── agent/graph.py     # LangGraph agent: LLM, tools, guardrails
 │   └── main.py            # FastAPI app: rate limiting, retries, errors
-├── frontend/              # Next.js dashboard (chat + monitor panel)
+├── frontend/
+│   ├── app/               # Page, layout and global styles
+│   ├── components/        # Chat input, messages, route map, campus picker
+│   └── lib/               # API client, shared types, map layout
 └── requirements.txt
 ```
 
@@ -113,12 +118,24 @@ Request:
 Response:
 
 ```json
-{ "calculated_route": "The fastest way from the Library to the Dormitory is to go through the Student Union. The total travel time is 10 minutes." }
+{
+  "calculated_route": "The fastest way from the Library to the Dormitory is to go through the Student Union. The total travel time is 10 minutes.",
+  "route": { "path": ["Library", "Student Union", "Dormitory"], "total_time": 10 },
+  "steps": [
+    "Looking up the fastest route from Library to Dormitory",
+    "Found Library → Student Union → Dormitory (10 min)",
+    "Writing the answer"
+  ]
+}
 ```
+
+- `calculated_route`: the agent's written answer, shown in the chat.
+- `route`: the structured result, drawn as a map under the answer. `null` when there is no route, for example for an unknown building.
+- `steps`: what the agent actually did, in plain English, shown in the collapsible "Thought for Xs" section. Empty when no tool was used.
 
 | Status | Meaning |
 |---|---|
-| 200 | Route (or a rejection for an unknown building) in `calculated_route` |
+| 200 | The agent's answer (or a rejection for an unknown building) |
 | 422 | `user_instruction` is empty, whitespace only, or over 500 characters |
 | 429 | Rate limit exceeded (5 requests per minute per IP) |
 | 500 | The agent failed after all retries; returns a generic message, details are logged server-side |
@@ -137,4 +154,4 @@ Response:
 - Behind a reverse proxy, run uvicorn with `--proxy-headers`, otherwise every client shares the proxy's rate limit.
 - CORS only allows `http://localhost:3000` and `http://127.0.0.1:3000`. Add your production origin in `app/main.py`.
 - The 8B model occasionally makes an unnecessary tool call for non-routing questions, though its answers stay correct.
-- The "Campus Map & Agent State" panel is a placeholder; routes are not visualized yet.
+- The map layout in `frontend/lib/campus.ts` repeats the paths from `app/core/tools.py`. If you change the campus, update both.

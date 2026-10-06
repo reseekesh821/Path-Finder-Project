@@ -1,76 +1,119 @@
 "use client";
 
-import { useRef, useState } from "react";
-import { Radar } from "lucide-react";
-import { cn } from "cn";
+import { useEffect, useRef, useState } from "react";
+import { Map as MapIcon, Navigation, SquarePen } from "lucide-react";
 
-import { ChatPanel } from "@/components/chat-panel";
-import { MonitorPanel } from "@/components/monitor-panel";
+import { CampusPicker } from "@/components/campus-picker";
+import { ChatInput } from "@/components/chat-input";
+import { ChatMessage, ThinkingMessage } from "@/components/chat-message";
+import { Button } from "@/components/ui/button";
 import { requestRoute } from "@/lib/api";
-import type { Message, Role } from "@/lib/types";
+import type { Message } from "@/lib/types";
 
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [isMapOpen, setIsMapOpen] = useState(false);
   const nextId = useRef(0);
+  const bottomRef = useRef<HTMLDivElement>(null);
 
-  const appendMessage = (role: Role, text: string, isError = false) => {
-    setMessages((prev) => [...prev, { id: nextId.current++, role, text, isError }]);
+  // Keep the newest message or the opened map in view
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [messages, isLoading, isMapOpen]);
+
+  const appendMessage = (message: Omit<Message, "id">) => {
+    setMessages((prev) => [...prev, { id: nextId.current++, ...message }]);
   };
 
-  const sendInstruction = async (instruction: string) => {
-    const trimmed = instruction.trim();
+  const sendMessage = async (text: string) => {
+    const trimmed = text.trim();
     if (!trimmed || isLoading) return;
 
-    appendMessage("user", trimmed);
+    appendMessage({ role: "user", text: trimmed });
     setIsLoading(true);
+    const startedAt = performance.now();
 
     try {
-      appendMessage("agent", await requestRoute(trimmed));
+      const { answer, route, steps } = await requestRoute(trimmed);
+      const thoughtSeconds = Math.max(1, Math.round((performance.now() - startedAt) / 1000));
+      appendMessage({ role: "agent", text: answer, route, steps, thoughtSeconds });
     } catch (error) {
-      appendMessage("agent", error instanceof Error ? error.message : "Something went wrong.", true);
+      const message = error instanceof Error ? error.message : "Something went wrong. Please try again.";
+      appendMessage({ role: "agent", text: message, isError: true });
     } finally {
       setIsLoading(false);
     }
   };
 
-  const lastAgentMessage = messages.findLast((m) => m.role === "agent");
+  // Picking two buildings on the map sends the question for the user
+  const askForRoute = (from: string, to: string) => {
+    setIsMapOpen(false);
+    void sendMessage(`Fastest route from ${from} to ${to}?`);
+  };
+
+  const startNewChat = () => {
+    setMessages([]);
+    setIsMapOpen(false);
+  };
+
+  const isEmpty = messages.length === 0 && !isLoading;
 
   return (
-    <main className="flex min-h-dvh flex-col bg-background text-foreground lg:h-dvh">
-      <Header isLoading={isLoading} />
+    <main className="flex h-dvh flex-col">
+      <header className="flex h-14 shrink-0 items-center justify-between px-4">
+        <div className="flex items-center gap-2 font-semibold">
+          <Navigation className="size-4 text-emerald-400" />
+          Pathfinder
+        </div>
+        {!isEmpty && (
+          <div className="flex items-center gap-1">
+            <Button variant="ghost" size="sm" onClick={() => setIsMapOpen((open) => !open)} aria-pressed={isMapOpen}>
+              <MapIcon />
+              Campus map
+            </Button>
+            <Button variant="ghost" size="sm" onClick={startNewChat} disabled={isLoading}>
+              <SquarePen />
+              New chat
+            </Button>
+          </div>
+        )}
+      </header>
 
-      {/* Stacked on small screens, side by side on large screens */}
-      <div className="grid flex-1 gap-4 p-4 sm:p-6 lg:min-h-0 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
-        <ChatPanel messages={messages} isLoading={isLoading} onSend={(text) => void sendInstruction(text)} />
-        <MonitorPanel isLoading={isLoading} lastAgentMessage={lastAgentMessage} />
-      </div>
+      {isEmpty ? (
+        // First screen with the greeting, the input and the campus map
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="mx-auto flex min-h-full w-full max-w-2xl flex-col justify-center gap-6 px-4 py-8">
+            <div className="space-y-2 text-center">
+              <h1 className="text-3xl font-semibold tracking-tight">Where do you want to go?</h1>
+              <p className="text-muted-foreground">
+                Ask in your own words or tap two buildings on the map.
+              </p>
+            </div>
+            <ChatInput disabled={isLoading} onSend={(text) => void sendMessage(text)} />
+            <CampusPicker disabled={isLoading} onPick={askForRoute} />
+          </div>
+        </div>
+      ) : (
+        <>
+          <div className="flex-1 overflow-y-auto">
+            <div className="mx-auto flex max-w-3xl flex-col gap-8 px-4 py-6">
+              {messages.map((message) => (
+                <ChatMessage key={message.id} message={message} />
+              ))}
+              {isLoading && <ThinkingMessage />}
+              {/* The map sits at the end of the conversation so it never covers a message */}
+              {isMapOpen && (
+                <CampusPicker disabled={isLoading} onPick={askForRoute} onClose={() => setIsMapOpen(false)} />
+              )}
+              <div ref={bottomRef} />
+            </div>
+          </div>
+          <div className="mx-auto w-full max-w-3xl shrink-0 px-4 pb-4">
+            <ChatInput disabled={isLoading} onSend={(text) => void sendMessage(text)} />
+          </div>
+        </>
+      )}
     </main>
-  );
-}
-
-function Header({ isLoading }: { isLoading: boolean }) {
-  return (
-    <header className="flex items-center justify-between border-b border-border/60 px-4 py-3 sm:px-6">
-      <div className="flex items-center gap-2.5">
-        <div className="flex size-8 items-center justify-center rounded-lg bg-emerald-500/10 ring-1 ring-emerald-500/30">
-          <Radar className="size-4 text-emerald-400" />
-        </div>
-        <div>
-          <h1 className="text-sm font-semibold tracking-tight">Agentic Pathfinder</h1>
-          <p className="text-xs text-muted-foreground">Campus routing agent</p>
-        </div>
-      </div>
-
-      <div className="flex items-center gap-2 rounded-full border border-border/60 px-3 py-1 text-xs text-muted-foreground">
-        <span className="relative flex size-2">
-          {isLoading && (
-            <span className="absolute inline-flex size-full animate-ping rounded-full bg-amber-400 opacity-75" />
-          )}
-          <span className={cn("relative inline-flex size-2 rounded-full", isLoading ? "bg-amber-400" : "bg-emerald-400")} />
-        </span>
-        {isLoading ? "Calculating" : "Ready"}
-      </div>
-    </header>
   );
 }

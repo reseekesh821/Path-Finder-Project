@@ -2,13 +2,13 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
-// Variable names must match the ones globals.css reads (--font-sans, --font-geist-mono).
+// These names must match the font variables used in globals.css
 const geistSans = Geist({ variable: "--font-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
 
 export const metadata: Metadata = {
   title: "Agentic Pathfinder",
-  description: "Campus routing agent dashboard",
+  description: "Find the fastest walking route between campus buildings",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
